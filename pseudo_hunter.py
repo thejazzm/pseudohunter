@@ -1,122 +1,503 @@
-import sys,subprocess,re,time,threading
-from concurrent.futures import ThreadPoolExecutor,as_completed
-RESET="\033[0m";BOLD="\033[1m";PURPLE="\033[35m";TEAL="\033[36m";GREEN="\033[32m";YELLOW="\033[33m";GRAY="\033[90m";RED="\033[31m";CYAN="\033[96m";DIM="\033[2m"
-BANNER=f"""{PURPLE}{BOLD}
+import sys, subprocess, re, time, threading, json, os
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from osint_methodology import (
+    rank_pseudos, SessionJournal, format_dorks_for_txt, dedupe_hits
+)
+import shutil
+import threading as _threading_module 
+
+_active_processes = []
+_active_processes_lock = threading.Lock()
+
+def _register_process(proc):
+    with _active_processes_lock:
+        _active_processes.append(proc)
+
+def _unregister_process(proc):
+    with _active_processes_lock:
+        if proc in _active_processes:
+            _active_processes.remove(proc)
+
+def kill_all_active_processes():
+    with _active_processes_lock:
+        for proc in _active_processes:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        _active_processes.clear()
+
+# ─── Colors ──────────────────────────────────────────────────────────────────
+R="\033[0m";BD="\033[1m";DM="\033[2m";IT="\033[3m"
+PU="\033[35m";TE="\033[36m";GR="\033[32m";YE="\033[33m"
+GY="\033[90m";RD="\033[31m";CY="\033[96m";BL="\033[34m";MG="\033[95m"
+
+BANNER=f"""{PU}{BD}
 ██████╗ ███████╗███████╗██╗   ██╗██████╗  ██████╗
 ██╔══██╗██╔════╝██╔════╝██║   ██║██╔══██╗██╔═══██╗
 ██████╔╝███████╗█████╗  ██║   ██║██║  ██║██║   ██║
 ██╔═══╝ ╚════██║██╔══╝  ██║   ██║██║  ██║██║   ██║
 ██║     ███████║███████╗╚██████╔╝██████╔╝╚██████╔╝
-╚═╝     ╚══════╝╚══════╝ ╚═════╝ ╚═════╝  ╚═════╝
-{RESET}{TEAL}        ██╗  ██╗██╗   ██╗███╗   ██╗████████╗███████╗██████╗ {RESET}
-{TEAL}        ██║  ██║██║   ██║████╗  ██║╚══██╔══╝██╔════╝██╔══██╗{RESET}
-{TEAL}        ███████║██║   ██║██╔██╗ ██║   ██║   █████╗  ██████╔╝{RESET}
-{TEAL}        ██╔══██║██║   ██║██║╚██╗██║   ██║   ██╔══╝  ██╔══██╗{RESET}
-{TEAL}        ██║  ██║╚██████╔╝██║ ╚████║   ██║   ███████╗██║  ██║{RESET}
-{TEAL}        ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝   ╚═╝   ╚══════╝╚═╝  ╚═╝{RESET}
-{GRAY}         Generate and search common usernames  — by thejazzman ft. Claude{RESET}
+╚═╝     ╚══════╝╚══════╝ ╚═════╝ ╚═════╝  ╚═════╝{R}
+{TE}        ██╗  ██╗██╗   ██╗███╗   ██╗████████╗███████╗██████╗ {R}
+{TE}        ██║  ██║██║   ██║████╗  ██║╚══██╔══╝██╔════╝██╔══██╗{R}
+{TE}        ███████║██║   ██║██╔██╗ ██║   ██║   █████╗  ██████╔╝{R}
+{TE}        ██╔══██║██║   ██║██║╚██╗██║   ██║   ██╔══╝  ██╔══██╗{R}
+{TE}        ██║  ██║╚██████╔╝██║ ╚████║   ██║   ███████╗██║  ██║{R}
+{TE}        ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝   ╚═╝   ╚══════╝╚═╝  ╚═╝{R}
+{GY}              OSINT username hunter — by thejazzman ft. Claude{R}
 """
+
+SEP = f"  {GY}{'─'*62}{R}"
+
 def sv(t): return re.sub(r'[aeiouAEIOU]','',t)
-def generer_pseudos(prenom,nom):
-    p=prenom.lower();n=nom.lower();pv=sv(p);nv=sv(n);p2=p[:2];n2=n[:2];p3=p[:3];n3=n[:3]
+def ask(q, opts):
+    print(f"\n  {BD}{YE}{q}{R}")
+    for k,v in opts.items(): print(f"  {TE}[{k}]{R} {v}")
+    print(f"  {GY}> {R}",end="")
+    while True:
+        r=input().strip().lower()
+        if r in opts: return r
+        print(f"  {RD}Invalid choice:{R} ",end="")
+
+def inp(label, optional=False):
+    tag = f"{GY}(optional, Enter to skip){R}" if optional else ""
+    print(f"  {BD}{TE}{label}{R} {tag}: ",end="")
+    return input().strip()
+
+def section(title, color=GR):
+    print(f"\n{SEP}")
+    print(f"  {BD}{color}{title}{R}\n")
+
+def gen_pseudos(first, last):
+    p=first.lower();n=last.lower();pv=sv(p);nv=sv(n)
+    p2=p[:2];n2=n[:2];p3=p[:3];n3=n[:3]
     ps=set()
-    ps.update([f"{p}.{n}",f"{n}.{p}",f"{p}{n}",f"{n}{p}",f"{p}_{n}",f"{n}_{p}",f"{p}-{n}",f"{n}-{p}",f"{p[0]}.{n}",f"{p[0]}{n}",f"{p[0]}_{n}",f"{p[0]}-{n}",f"{p}.{n[0]}",f"{p}{n[0]}",f"{p}_{n[0]}",f"{p[0]}{n[0]}",f"{p[0]}.{n[0]}",f"{p[0]}_{n[0]}",f"{nv}.{p}",f"{p}.{nv}",f"{nv}{p}",f"{p}{nv}",f"{nv}_{p}",f"{p}_{nv}",f"{nv}-{p}",f"{p}-{nv}",f"{pv}.{n}",f"{n}.{pv}",f"{pv}{n}",f"{pv}_{n}",f"{pv}.{nv}",f"{nv}.{pv}",f"{nv}{pv}",f"{pv}{nv}",f"{p3}.{n}",f"{p3}{n}",f"{p3}_{n}",f"{n3}.{p}",f"{n3}{p}",f"{p3}.{n3}",f"{p3}{n3}",f"{p[0]}{nv}",f"{nv}{p[0]}",f"{n[0]}{pv}",f"{pv}{n[0]}",f"{p2}.{n}",f"{p2}{n}",f"{n2}.{p}",f"{n2}{p}",f"{p.capitalize()}{n}",f"{p}{n.capitalize()}",f"{p}.{n3}",f"{p3}.{n3}",f"{nv}.{p3}",f"{p3}.{nv}",f"{p3}-{n}",f"{n}-{p3}",f"{p3}-{nv}",f"{nv}-{p3}",f"{p2}-{n}",f"{n2}-{p}",f"{p}{n[:3]}",f"{n}{p[:3]}"])
+    ps.update([
+        f"{p}.{n}",f"{n}.{p}",f"{p}{n}",f"{n}{p}",
+        f"{p}_{n}",f"{n}_{p}",f"{p}-{n}",f"{n}-{p}",
+        f"{p[0]}.{n}",f"{p[0]}{n}",f"{p[0]}_{n}",f"{p[0]}-{n}",
+        f"{p}.{n[0]}",f"{p}{n[0]}",f"{p}_{n[0]}",
+        f"{p[0]}{n[0]}",f"{p[0]}.{n[0]}",f"{p[0]}_{n[0]}",
+        f"{nv}.{p}",f"{p}.{nv}",f"{nv}{p}",f"{p}{nv}",
+        f"{nv}_{p}",f"{p}_{nv}",f"{nv}-{p}",f"{p}-{nv}",
+        f"{pv}.{n}",f"{n}.{pv}",f"{pv}{n}",f"{pv}_{n}",
+        f"{pv}.{nv}",f"{nv}.{pv}",f"{nv}{pv}",f"{pv}{nv}",
+        f"{p3}.{n}",f"{p3}{n}",f"{p3}_{n}",
+        f"{n3}.{p}",f"{n3}{p}",
+        f"{p3}.{n3}",f"{p3}{n3}",
+        f"{p[0]}{nv}",f"{nv}{p[0]}",
+        f"{n[0]}{pv}",f"{pv}{n[0]}",
+        f"{p2}.{n}",f"{p2}{n}",
+        f"{n2}.{p}",f"{n2}{p}",
+        f"{p.capitalize()}{n}",f"{p}{n.capitalize()}",
+        f"{p}.{n3}",f"{p3}.{n3}",
+        f"{nv}.{p3}",f"{p3}.{nv}",
+        f"{p3}-{n}",f"{n}-{p3}",
+        f"{p2}-{n}",f"{n2}-{p}",
+        f"{p}{n[:3]}",f"{n}{p[:3]}",
+        f"{pv}{nv}x",f"_{p}.{n}",
+        f"{p}{n[0]}{n[-1]}",f"{p[0]}{p[-1]}{n}",
+    ])
     return sorted({x for x in ps if len(re.sub(r'[.\-_]','',x))>=5})
+
+def gen_dorks(first, last, email=None, phone=None):
+    name=f'"{first} {last}"'
+    dorks=[
+        f'{name} site:linkedin.com',
+        f'{name} site:twitter.com OR site:x.com',
+        f'{name} site:facebook.com',
+        f'{name} site:instagram.com',
+        f'{name} filetype:pdf',
+        f'{name} email',
+        f'{name} phone OR tel OR contact',
+        f'"{first}.{last}" OR "{last}.{first}"',
+        f'"{first[0]}{last}" site:github.com',
+        f'{name} -site:linkedin.com -site:facebook.com',
+    ]
+    if email: dorks.append(f'"{email}"')
+    if phone: dorks.append(f'"{phone}"')
+    return dorks
+
+SHERLOCK_TIME_PER_PSEUDO = 25   
+MAIGRET_TIME_PER_PSEUDO  = 140  
+
+def get_concurrency_profile(nb):
+    if nb <= 5:
+        return {"workers": 3, "sherlock_timeout": 300, "maigret_timeout": 420}
+    elif nb <= 15:
+        return {"workers": 3, "sherlock_timeout": 300, "maigret_timeout": 420}
+    elif nb <= 20:
+        return {"workers": 2, "sherlock_timeout": 300, "maigret_timeout": 480}
+    else:
+        return {"workers": 2, "sherlock_timeout": 360, "maigret_timeout": 540}
+
+def estimate_seconds(nb, use_s, use_m, workers):
+    batches = -(-nb // workers)  # division entière arrondie au-dessus
+    total = 0
+    if use_s: total = max(total, batches * SHERLOCK_TIME_PER_PSEUDO)
+    if use_m: total = max(total, batches * MAIGRET_TIME_PER_PSEUDO)
+    return total
+
+def fmt_duration(seconds):
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    if h: return f"{h}h{m:02d}min"
+    if m: return f"{m}min{s:02d}s"
+    return f"{s}s"
+
 class Tracker:
-    def __init__(self,ts,tm):
-        self.lock=threading.Lock();self.sd=0;self.md=0;self.ts=ts;self.tm=tm;self.hs=0;self.hm=0;self.active="";self._stop=False;self._t=threading.Thread(target=self._loop,daemon=True)
+    def __init__(self, tasks):
+        self.lock=threading.Lock()
+        self.tasks={t:{"done":0,"total":n,"hits":0} for t,n in tasks.items()}
+        self.active="";self._stop=False
+        self._t=threading.Thread(target=self._loop,daemon=True)
     def start(self): self._t.start()
     def stop(self): self._stop=True;self._t.join();print()
-    def us(self,p,h):
-        with self.lock: self.sd+=1;self.active=p;self.hs+=int(h)
-    def um(self,p,h):
-        with self.lock: self.md+=1;self.active=p;self.hm+=int(h)
+    def update(self,tool,pseudo,hit):
+        with self.lock:
+            if tool in self.tasks:
+                self.tasks[tool]["done"]+=1
+                if hit: self.tasks[tool]["hits"]+=1
+            self.active=pseudo
     def _bar(self,d,t,c):
-        if t==0: return f"{GRAY}[désactivé]{RESET}"
-        pct=d/t;f=int(pct*22);b="█"*f+"░"*(22-f)
-        return f"{c}[{b}]{RESET} {BOLD}{int(pct*100):3d}%{RESET} {DIM}({d}/{t}){RESET}"
+        if t==0: return f"{GY}[off]{R}"
+        pct=d/t;f=int(pct*18);b="█"*f+"░"*(18-f)
+        return f"{c}[{b}]{R}{BD}{int(pct*100):3d}%{R}{DM}({d}/{t}){R}"
     def _loop(self):
         sp=["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];i=0
         while not self._stop:
-            with self.lock: sd=self.sd;md=self.md;hs=self.hs;hm=self.hm;ac=self.active
-            s=sp[i%len(sp)];i+=1;bs=self._bar(sd,self.ts,TEAL);bm=self._bar(md,self.tm,PURPLE)
-            hits=f"{GREEN}hits:{hs+hm}{RESET}";curr=f"{GRAY}{ac[:26]:<26}{RESET}"
-            print(f"\r  {TEAL}{s}{RESET} Sherlock {bs}  Maigret {bm}  {hits}  {curr}",end="",flush=True)
-            time.sleep(0.1)
-def run_sherlock(p,t):
+            with self.lock:
+                parts=[]
+                total_hits=0
+                for name,data in self.tasks.items():
+                    parts.append(f"{name} {self._bar(data['done'],data['total'],TE if name=='Sherlock' else PU if name=='Maigret' else BL)}")
+                    total_hits+=data["hits"]
+                ac=self.active
+            s=sp[i%len(sp)];i+=1
+            line="  ".join(parts)
+            print(f"\r  {TE}{s}{R} {line}  {GR}hits:{total_hits}{R}  {GY}{ac[:22]:<22}{R}",end="",flush=True)
+            time.sleep(0.08)
+
+def run_sherlock(p,t,timeout=300,journal=None):
+    proc = None
     try:
-        r=subprocess.run(["sherlock",p,"--timeout","8","--print-found"],capture_output=True,text=True,timeout=30)
-        l=[x.strip() for x in r.stdout.splitlines() if "[+]" in x];t.us(p,bool(l));return p,l
-    except FileNotFoundError: t.us(p,False);return p,["ERREUR: sherlock non trouvé"]
-    except subprocess.TimeoutExpired: t.us(p,False);return p,[]
-def run_maigret(p,t):
+        proc = subprocess.Popen(["sherlock",p,"--timeout","8","--print-found"],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+        _register_process(proc)
+        stdout, stderr = proc.communicate(timeout=timeout)
+        l=[x.strip() for x in stdout.splitlines() if "[+]" in x or "http" in x]
+        status = "ok" if proc.returncode == 0 or l else "error"
+        if journal: journal.log_pseudo_result("sherlock", p, status, len(l))
+        t.update("Sherlock",p,bool(l));return p,l
+    except FileNotFoundError:
+        if journal: journal.log_pseudo_result("sherlock", p, "tool_not_found")
+        t.update("Sherlock",p,False);return p,[]
+    except subprocess.TimeoutExpired:
+        if proc: proc.kill()
+        if journal: journal.log_pseudo_result("sherlock", p, "timeout")
+        t.update("Sherlock",p,False);return p,[]
+    finally:
+        if proc: _unregister_process(proc)
+
+def run_maigret(p,t,timeout=420,journal=None):
+    proc = None
     try:
-        r=subprocess.run(["maigret",p,"--no-color","-a"],capture_output=True,text=True,timeout=60)
-        l=[x.strip() for x in r.stdout.splitlines() if "[+]" in x or "Found" in x];t.um(p,bool(l));return p,l
-    except FileNotFoundError: t.um(p,False);return p,["ERREUR: maigret non trouvé"]
-    except subprocess.TimeoutExpired: t.um(p,False);return p,[]
-def ask(question,options):
-    print(f"\n  {BOLD}{YELLOW}{question}{RESET}")
-    for k,v in options.items(): print(f"  {TEAL}[{k}]{RESET} {v}")
-    print(f"  {GRAY}> {RESET}",end="")
-    while True:
-        rep=input().strip().lower()
-        if rep in options: return rep
-        print(f"  {RED}Choix invalide :{RESET} ",end="")
+        proc = subprocess.Popen(["maigret",p,"--no-color"],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+        _register_process(proc)
+        stdout, stderr = proc.communicate(timeout=timeout)
+        l=[x.strip() for x in stdout.splitlines() if "[+]" in x or "http" in x or "Found" in x]
+        status = "ok" if proc.returncode == 0 or l else "error"
+        if journal: journal.log_pseudo_result("maigret", p, status, len(l))
+        t.update("Maigret",p,bool(l));return p,l
+    except FileNotFoundError:
+        if journal: journal.log_pseudo_result("maigret", p, "tool_not_found")
+        t.update("Maigret",p,False);return p,[]
+    except subprocess.TimeoutExpired:
+        if proc: proc.kill()
+        if journal: journal.log_pseudo_result("maigret", p, "timeout")
+        t.update("Maigret",p,False);return p,[]
+    finally:
+        if proc: _unregister_process(proc)
+    
+def run_holehe(email,t):
+    try:
+        r=subprocess.run(["holehe",email,"--only-used"],capture_output=True,text=True,timeout=120)
+        l=[x.strip() for x in r.stdout.splitlines() if "[+]" in x or "http" in x]
+        t.update("Holehe",email,bool(l));return email,l
+    except FileNotFoundError: t.update("Holehe",email,False);return email,[]
+    except subprocess.TimeoutExpired: t.update("Holehe",email,False);return email,[]
+
+def run_phoneinfoga(phone,t):
+    try:
+        r=subprocess.run(["phoneinfoga","scan","-n",phone],capture_output=True,text=True,timeout=120)
+        l=[x.strip() for x in r.stdout.splitlines() if x.strip() and "Error" not in x and "---" not in x]
+        t.update("Phone",phone,bool(l));return phone,l
+    except FileNotFoundError: t.update("Phone",phone,False);return phone,[]
+    except subprocess.TimeoutExpired: t.update("Phone",phone,False);return phone,[]
+
+# ─── Export ──────────────────────────────────────────────────────────────────
+def export_results(data, first, last):
+    ts=datetime.now().strftime("%Y%m%d_%H%M%S")
+    name=f"pseudohunter_{first}_{last}_{ts}"
+    # JSON
+    with open(f"{name}.json","w") as f: json.dump(data,f,indent=2)
+    # TXT
+    with open(f"{name}.txt","w") as f:
+        f.write(f"PseudoHunter — {first} {last} — {datetime.now()}\n")
+        f.write("="*60+"\n\n")
+        for section,results in data.items():
+            f.write(f"\n[ {section} ]\n")
+            if isinstance(results,list):
+                for r in results: f.write(f"  {r}\n")
+            elif isinstance(results,dict):
+                for k,v in results.items():
+                    f.write(f"  {k}:\n")
+                    for x in v: f.write(f"    + {x}\n")
+    return name
+
+import shutil
+
+def check_dependencies(need_sherlock=False, need_maigret=False, need_holehe=False, need_phoneinfoga=False):
+    """
+    Vérifie que les outils externes nécessaires sont installés AVANT de lancer le scan.
+    Retourne (ok: bool, missing: list[str])
+    """
+    checks = {
+        "sherlock": need_sherlock,
+        "maigret": need_maigret,
+        "holehe": need_holehe,
+        "phoneinfoga": need_phoneinfoga,
+    }
+    missing = [tool for tool, needed in checks.items() if needed and shutil.which(tool) is None]
+    return (len(missing) == 0, missing)
+
 def main():
     print(BANNER)
-    print(f"  {BOLD}{TEAL}Entrez le prénom :{RESET} ",end="");prenom=input().strip()
-    print(f"  {BOLD}{TEAL}Entrez le nom    :{RESET} ",end="");nom=input().strip()
-    if not prenom or not nom: print(f"\n  {YELLOW}Prénom et nom requis.{RESET}\n");sys.exit(1)
-    tous=generer_pseudos(prenom,nom)
-    print(f"\n  {GRAY}{len(tous)} pseudos disponibles (>=5 caractères){RESET}")
-    print(f"\n  {BOLD}{YELLOW}Combien de pseudos voulez-vous utiliser ?{RESET}")
-    print(f"  {DIM}(entre 1 et {len(tous)}, ou Entrée pour tous){RESET}")
-    print(f"  {GRAY}> {RESET}",end="")
-    rep_nb=input().strip()
-    nb=len(tous) if rep_nb=="" else max(1,min(int(rep_nb),len(tous))) if rep_nb.isdigit() else len(tous)
-    pseudos=tous[:nb]
-    print(f"\n  {BOLD}{PURPLE}Cible{RESET}   : {BOLD}{prenom} {nom}{RESET}")
-    print(f"  {BOLD}{TEAL}Pseudos{RESET} : {len(pseudos)} variantes\n")
-    print(f"  {GRAY}{'─'*60}{RESET}")
+
+    # ── Target info
+    first = inp("First name")
+    last  = inp("Last name")
+    if not first or not last:
+        print(f"\n  {YE}First and last name required.{R}\n"); sys.exit(1)
+
+    email = inp("Email address", optional=True)
+    phone = inp("Phone number (e.g. +33612345678)", optional=True)
+
+    # ── Pseudo count
+    all_pseudos = gen_pseudos(first, last)
+    ranked = rank_pseudos(all_pseudos, first, last)
+    all_pseudos = [p for p, score in ranked]
+    print(f"\n  {GY}{len(all_pseudos)} variants available (>=5 chars){R}\n")
+
+    items_all = list(enumerate(all_pseudos, 1))
+    for i in range(0, len(items_all), 3):
+        row = items_all[i:i+3]; line = ""
+        for idx, p in row: line += f"  {GY}{idx:02d}.{R} {p:<24}"
+        print(line)
+
+    print(f"\n  {BD}{YE}Selection mode:{R}")
+    print(f"  {TE}[a]{R} Auto — take the first N (fastest)")
+    print(f"  {TE}[m]{R} Manual — pick specific numbers from the list above")
+    print(f"  {GY}> {R}", end="")
+    sel_mode = input().strip().lower()
+
+    if sel_mode == "m":
+        print(f"  {BD}{TE}Enter numbers separated by commas{R} {DM}(e.g. 2,7,15){R}: ", end="")
+        raw = input().strip()
+        try:
+            chosen_idx = sorted({int(x.strip()) for x in raw.split(",") if x.strip().isdigit()})
+            pseudos = [all_pseudos[i-1] for i in chosen_idx if 1 <= i <= len(all_pseudos)]
+        except (ValueError, IndexError):
+            pseudos = []
+        if not pseudos:
+            print(f"\n  {RD}Invalid selection. Falling back to auto mode.{R}")
+            sel_mode = "a"
+
+    if sel_mode != "m":
+        print(f"  {BD}{YE}How many variants to search?{R} {DM}(Enter = all){R}: ", end="")
+        nb_in = input().strip()
+        nb = len(all_pseudos) if not nb_in.isdigit() else max(1, min(int(nb_in), len(all_pseudos)))
+        pseudos = all_pseudos[:nb]
+
+    print(f"\n  {GR}{len(pseudos)} pseudo(s) selected.{R}")
+
+    profile = get_concurrency_profile(len(pseudos))
+    est_sherlock = estimate_seconds(len(pseudos), True, False, profile["workers"])
+    est_maigret  = estimate_seconds(len(pseudos), False, True, profile["workers"])
+    est_both     = estimate_seconds(len(pseudos), True, True, profile["workers"])
+
+    print(f"\n  {BD}{YE}Estimated time for {len(pseudos)} pseudo(s){R} "
+          f"{DM}({profile['workers']} workers parallel){R}:")
+    print(f"    {TE}Sherlock only{R}        : ~{fmt_duration(est_sherlock)}")
+    print(f"    {PU}Maigret only{R}         : ~{fmt_duration(est_maigret)}")
+    print(f"    {BD}Sherlock + Maigret{R}   : ~{fmt_duration(est_both)}")
+
+    # ── Tool selection
+    mode = ask("Select search mode:", {
+        "1": "Sherlock only",
+        "2": "Maigret only",
+        "3": "Sherlock + Maigret",
+        "4": "Full scan (Sherlock + Maigret + Holehe + PhoneInfoga)",
+        "5": "Generate variants only (no search)",
+    })
+
+    use_s = mode in ("1","3","4")
+    use_m = mode in ("2","3","4")
+    use_h = mode == "4" and bool(email)
+    use_p = mode == "4" and bool(phone)
+
+    deps_ok, missing = check_dependencies(use_s, use_m, use_h, use_p)
+    if not deps_ok:
+        print(f"\n  {RD}{BD}Missing required tool(s):{R} {', '.join(missing)}")
+        print(f"  {YE}Install them before running this mode, or choose a different mode.{R}\n")
+        sys.exit(1)
+
+    # ── Profil de concurrence + estimation de durée
+    profile = get_concurrency_profile(len(pseudos))
+    est_seconds = estimate_seconds(len(pseudos), use_s, use_m, profile["workers"])
+
+    print(f"\n  {BD}{YE}Estimated time:{R} ~{fmt_duration(est_seconds)} "
+          f"{DM}({len(pseudos)} pseudos, {profile['workers']} workers parallel){R}")
+
+    if est_seconds > 600:
+        conf = ask("This scan will take a while. Continue?", {"y":"Yes, launch it","n":"No, go back and reduce pseudo count"})
+        if conf == "n":
+            print(f"\n  {YE}Cancelled. Re-run the script with fewer variants.{R}\n")
+            sys.exit(0)
+
+    # ── Display variants
+    print(f"\n  {BD}{PU}Target{R}   : {BD}{first} {last}{R}")
+    ...
+
+    # ── Display variants
+    print(f"\n  {BD}{PU}Target{R}   : {BD}{first} {last}{R}")
+    if email: print(f"  {BD}{PU}Email{R}    : {email}")
+    if phone: print(f"  {BD}{PU}Phone{R}    : {phone}")
+    print(f"  {BD}{TE}Variants{R} : {len(pseudos)} selected\n")
+    print(SEP)
     items=list(enumerate(pseudos,1))
     for i in range(0,len(items),3):
         row=items[i:i+3];line=""
-        for idx,p in row: line+=f"  {GRAY}{idx:02d}.{RESET} {p:<24}"
+        for idx,p in row: line+=f"  {GY}{idx:02d}.{R} {p:<24}"
         print(line)
-    print(f"  {GRAY}{'─'*60}{RESET}")
-    mode=ask("Quel mode de recherche ?",{"1":"Sherlock uniquement","2":"Maigret uniquement","3":"Sherlock + Maigret (complet)","4":"Génération seulement (pas de recherche)"})
-    use_s=mode in("1","3");use_m=mode in("2","3")
-    if mode=="4": print(f"\n  {GREEN}Liste générée. Aucune recherche lancée.{RESET}\n");sys.exit(0)
-    print(f"\n  {BOLD}{YELLOW}Lancement en cours...{RESET}\n")
-    tracker=Tracker(len(pseudos) if use_s else 0,len(pseudos) if use_m else 0);tracker.start()
-    fs={};fm={}
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        if use_s: fs={ex.submit(run_sherlock,p,tracker):p for p in pseudos}
-        if use_m: fm={ex.submit(run_maigret,p,tracker):p for p in pseudos}
+    print(SEP)
+
+    if mode == "5":
+        print(f"\n  {GR}Variants generated. No search launched.{R}\n"); sys.exit(0)
+
+    # ── Google Dorks
+    section("Google Dorks — copy & search manually", YE)
+    for d in gen_dorks(first, last, email, phone):
+        print(f"  {YE}→{R} {d}")
+
+    # ── Launch search
+    print(f"\n  {BD}{YE}Launching search...{R}\n")
+    tasks={}
+    if use_s: tasks["Sherlock"]=len(pseudos)
+    if use_m: tasks["Maigret"]=len(pseudos)
+    if use_h: tasks["Holehe"]=1
+    if use_p: tasks["Phone"]=1
+
+    tracker=Tracker(tasks); tracker.start()
+    journal = SessionJournal(first, last)
+    journal.log("search_start", {"mode": mode, "nb_pseudos": len(pseudos)})
+
+    fs={};fm={};fh=None;fp=None
+    ex_sherlock = ThreadPoolExecutor(max_workers=profile["workers"]) if use_s else None
+    ex_maigret  = ThreadPoolExecutor(max_workers=max(1, profile["workers"]-1)) if use_m else None
+    ex_misc     = ThreadPoolExecutor(max_workers=2) if (use_h or use_p) else None
+
+    try:
+        if use_s: fs={ex_sherlock.submit(run_sherlock,p,tracker,profile["sherlock_timeout"],journal):p for p in pseudos}
+        if use_m: fm={ex_maigret.submit(run_maigret,p,tracker,profile["maigret_timeout"],journal):p for p in pseudos}
+        if use_h: fh=ex_misc.submit(run_holehe,email,tracker)
+        if use_p: fp=ex_misc.submit(run_phoneinfoga,phone,tracker)
+
         for f in as_completed({**fs,**fm}): pass
+        if fh: fh.result()
+        if fp: fp.result()
+    finally:
+        if ex_sherlock: ex_sherlock.shutdown(wait=True)
+        if ex_maigret:  ex_maigret.shutdown(wait=True)
+        if ex_misc:     ex_misc.shutdown(wait=True)
+
     tracker.stop()
-    res_s={p:f.result()[1] for f,p in fs.items() if f.result()[1] and "ERREUR" not in f.result()[1][0]}
-    res_m={p:f.result()[1] for f,p in fm.items() if f.result()[1] and "ERREUR" not in f.result()[1][0]}
-    print(f"\n  {GRAY}{'─'*60}{RESET}")
+
+    # ── Collect results
+    res={"target":{"first":first,"last":last,"email":email,"phone":phone},
+         "dorks":gen_dorks(first,last,email,phone),
+         "sherlock":{},"maigret":{},"holehe":[],"phoneinfoga":[]}
+
     if use_s:
-        print(f"  {BOLD}{GREEN}Résultats Sherlock{RESET}\n")
-        if res_s:
-            for p,ls in res_s.items():
-                print(f"  {BOLD}{TEAL}{p}{RESET}")
-                for l in ls: print(f"    {GREEN}[+]{RESET} {l.split(': ')[-1] if ': ' in l else l}")
-                print()
-        else: print(f"  {GRAY}Aucun résultat Sherlock.{RESET}\n")
-        print(f"  {GRAY}{'─'*60}{RESET}")
+        for f,p in fs.items():
+            _,l=f.result()
+            if l: res["sherlock"][p]=l
+
     if use_m:
-        print(f"  {BOLD}{PURPLE}Résultats Maigret{RESET}\n")
-        if res_m:
-            for p,ls in res_m.items():
-                print(f"  {BOLD}{PURPLE}{p}{RESET}")
-                for l in ls: print(f"    {CYAN}[+]{RESET} {l}")
+        for f,p in fm.items():
+            _,l=f.result()
+            if l: res["maigret"][p]=l
+
+    if use_h and fh:
+        _,l=fh.result()
+        res["holehe"]=l
+
+    if use_p and fp:
+        _,l=fp.result()
+        res["phoneinfoga"]=l
+
+    # ── Display results
+    if use_s:
+        section("Sherlock Results", GR)
+        if res["sherlock"]:
+            for p,ls in res["sherlock"].items():
+                print(f"  {BD}{TE}{p}{R}")
+                for l in ls: print(f"    {GR}[+]{R} {l.split(': ')[-1] if ': ' in l else l}")
                 print()
-        else: print(f"  {GRAY}Aucun résultat Maigret.{RESET}\n")
-        print(f"  {GRAY}{'─'*60}{RESET}")
-    total=len(res_s)+len(res_m)
-    print(f"  {BOLD}Terminé.{RESET} {GREEN}{total} pseudo(s) avec résultats.{RESET}\n")
-if __name__=="__main__": main()
+        else: print(f"  {GY}No results from Sherlock.{R}\n")
+
+    if use_m:
+        section("Maigret Results", PU)
+        if res["maigret"]:
+            for p,ls in res["maigret"].items():
+                print(f"  {BD}{PU}{p}{R}")
+                for l in ls: print(f"    {CY}[+]{R} {l}")
+                print()
+        else: print(f"  {GY}No results from Maigret.{R}\n")
+
+    if use_h:
+        section("Holehe Results — Email accounts", BL)
+        if res["holehe"]:
+            for l in res["holehe"]: print(f"  {BL}[+]{R} {l}")
+        else: print(f"  {GY}No accounts found for this email.{R}\n")
+
+    if use_p:
+        section("PhoneInfoga Results", MG)
+        if res["phoneinfoga"]:
+            for l in res["phoneinfoga"]: print(f"  {MG}[+]{R} {l}")
+        else: print(f"  {GY}No results for this number.{R}\n")
+
+    # ── Export
+    print(SEP)
+    exp = ask("Export results?", {"y":"Yes — save JSON + TXT report","n":"No"})
+    if exp == "y":
+        fname = export_results(res, first, last)
+        print(f"\n  {GR}Saved:{R} {fname}.json / {fname}.txt\n")
+        journal_path = journal.save(f"pseudohunter_journal_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+    print(f"  {GR}Journal saved:{R} {journal_path}\n")
+
+    # ── Summary
+    total = len(res["sherlock"])+len(res["maigret"])+(1 if res["holehe"] else 0)+(1 if res["phoneinfoga"] else 0)
+    print(SEP)
+    print(f"  {BD}Done.{R} {GR}{total} source(s) with results.{R}\n")
+
+def safe_main():
+    try:
+        main()
+    except KeyboardInterrupt:
+        print(f"\n\n  {YE}Interrupted by user (Ctrl+C). Killing active scans...{R}")
+        kill_all_active_processes()
+        sys.exit(130)
+
+if __name__=="__main__": safe_main()
