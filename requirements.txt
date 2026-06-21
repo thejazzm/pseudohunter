@@ -1,0 +1,7 @@
+# PseudoHunter has no direct Python dependencies (standard library only).
+# The dependencies below belong to the EXTERNAL tools orchestrated by PseudoHunter.
+# PhoneInfoga is a Go binary, installed separately (see README - Installation section).
+
+sherlock-project>=0.16.0
+maigret>=0.6.1
+holehe>=1.61

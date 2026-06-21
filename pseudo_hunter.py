@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import sys, subprocess, re, time, threading, json, os
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed

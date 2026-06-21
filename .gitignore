@@ -1,0 +1,18 @@
+# PseudoHunter scan data — NEVER PUSH
+pseudohunter_*.json
+pseudohunter_*.txt
+pseudohunter_journal_*.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# Codespaces / VS Code
+.vscode/
+*.code-workspace
+
+# OS
+.DS_Store
