@@ -1,26 +1,24 @@
 """
 osint_methodology.py
-Methodological functions for PseudoHunter:
--search timestamping
--confidence score for generated usernames
--session log
--structured dork export
--hit deduplication across tools
+Fonctions méthodologiques pour PseudoHunter :
+- horodatage par recherche
+- score de confiance des pseudos générés
+- journal de session
+- export des dorks structuré
+- déduplication des hits entre outils
+- profils de cible sauvegardés
+- état de reprise pour scans interrompus
 """
 import json
 import re
+import os
 from datetime import datetime
 
-# ─── confidence score for usernames ───────────────────────────────────────────
 def score_pseudo(pseudo, first, last):
-    """
-    Retourne un score 0-100 de vraisemblance d'usage réel,
-    basé sur des patterns statistiquement courants.
-    """
     p = pseudo.lower()
     f = first.lower()
     l = last.lower()
-    score = 30  # base
+    score = 30
 
     if p in (f"{f}.{l}", f"{f}_{l}", f"{f}{l}"):
         score += 50
@@ -31,7 +29,7 @@ def score_pseudo(pseudo, first, last):
     elif f in p or l in p:
         score += 15
 
-    if re.search(r'\d{2,4}$', p):  # suffixe numérique (ex: prenom.nom92)
+    if re.search(r'\d{2,4}$', p):
         score += 5
     if len(p) <= 16:
         score += 5
@@ -42,17 +40,11 @@ def score_pseudo(pseudo, first, last):
 
 
 def rank_pseudos(pseudos, first, last):
-    """Retourne la liste triée par score décroissant, avec le score attaché."""
     scored = [(p, score_pseudo(p, first, last)) for p in pseudos]
     return sorted(scored, key=lambda x: x[1], reverse=True)
 
 
-# ─── session log ───────────────────────────────────────────────────────
 class SessionJournal:
-    """
-    Timestamped log of a search session, kept separate from the results report.
-    Enables tracking of who/what/when was searched, independently of the hits found.
-    """
     def __init__(self, first, last):
         self.start_time = datetime.now()
         self.first = first
@@ -62,12 +54,11 @@ class SessionJournal:
     def log(self, event_type, detail):
         self.entries.append({
             "timestamp": datetime.now().isoformat(timespec="seconds"),
-            "type": event_type,   # ex: "search_start", "timeout", "hit", "error"
+            "type": event_type,
             "detail": detail,
         })
 
     def log_pseudo_result(self, tool, pseudo, status, nb_hits=0):
-        """status attendu: 'ok', 'timeout', 'tool_not_found', 'error'"""
         self.log("pseudo_result", {
             "tool": tool, "pseudo": pseudo, "status": status, "hits": nb_hits
         })
@@ -84,16 +75,13 @@ class SessionJournal:
         return filepath
 
 
-# ─── Structured export of dorks.───────────────────────────────────────────────
 def format_dorks_for_txt(dorks):
-    """Retourne un bloc texte cohérent avec le reste du rapport TXT."""
     lines = []
     for d in dorks:
         lines.append(f"  -> {d}")
     return "\n".join(lines)
 
 
-# ─── Deduplication of hits between Sherlock and Maigret. ─────────────────────────
 URL_PATTERN = re.compile(r'https?://[^\s)\]]+')
 
 def extract_url(line):
@@ -101,11 +89,6 @@ def extract_url(line):
     return m.group(0).rstrip('/').lower() if m else None
 
 def dedupe_hits(sherlock_results, maigret_results):
-    """
-    sherlock_results, maigret_results: dict {pseudo: [lignes]}
-    Returns a merged dictionary `{pseudo: {"sherlock": [...], "maigret": [...], "merged_urls": [...]}}`
-    with deduplication based on normalized URLs.
-    """
     merged = {}
     all_pseudos = set(sherlock_results.keys()) | set(maigret_results.keys())
 
@@ -128,3 +111,95 @@ def dedupe_hits(sherlock_results, maigret_results):
             "merged_unique": merged_urls,
         }
     return merged
+
+PROFILES_DIR = "profiles"
+
+def _profile_path(first, last):
+    os.makedirs(PROFILES_DIR, exist_ok=True)
+    safe_name = re.sub(r'[^a-z0-9]', '_', f"{first}_{last}".lower())
+    return os.path.join(PROFILES_DIR, f"{safe_name}.json")
+
+def save_profile(first, last, email, phone):
+    path = _profile_path(first, last)
+    data = {
+        "first": first,
+        "last": last,
+        "email": email or "",
+        "phone": phone or "",
+        "last_used": datetime.now().isoformat(timespec="seconds"),
+    }
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+    return path
+
+def list_profiles():
+    if not os.path.isdir(PROFILES_DIR):
+        return []
+    profiles = []
+    for fname in sorted(os.listdir(PROFILES_DIR)):
+        if fname.endswith(".json"):
+            try:
+                with open(os.path.join(PROFILES_DIR, fname)) as f:
+                    profiles.append(json.load(f))
+            except (json.JSONDecodeError, OSError):
+                continue
+    profiles.sort(key=lambda p: p.get("last_used", ""), reverse=True)
+    return profiles
+
+
+# ─── État de reprise pour scans interrompus ───────────────────────────────────
+RESUME_DIR = "resume"
+
+class ResumeState:
+    """
+    Garde une trace, pendant le scan, des pseudos déjà traités par outil.
+    Persisté sur disque à chaque résultat, pour permettre une reprise
+    après une interruption (Ctrl+C) sans tout relancer depuis zéro.
+    """
+    def __init__(self, first, last):
+        os.makedirs(RESUME_DIR, exist_ok=True)
+        safe_name = re.sub(r'[^a-z0-9]', '_', f"{first}_{last}".lower())
+        self.path = os.path.join(RESUME_DIR, f"{safe_name}_resume.json")
+        self.data = {
+            "sherlock": {}, "maigret": {},
+            "done_sherlock": [], "done_maigret": [],
+        }
+        if os.path.exists(self.path):
+            try:
+                with open(self.path) as f:
+                    loaded = json.load(f)
+                    self.data.update(loaded)
+            except (json.JSONDecodeError, OSError):
+                pass
+
+    def has_pending(self):
+        return os.path.exists(self.path) and (
+            self.data.get("done_sherlock") or self.data.get("done_maigret")
+        )
+
+    def mark_done(self, tool, pseudo, hits):
+        done_key = f"done_{tool}"
+        if pseudo not in self.data[done_key]:
+            self.data[done_key].append(pseudo)
+        if hits:
+            self.data[tool][pseudo] = hits
+        self._save()
+
+    def remaining(self, tool, pseudos):
+        done = set(self.data.get(f"done_{tool}", []))
+        return [p for p in pseudos if p not in done]
+
+    def get_results(self, tool):
+        return self.data.get(tool, {})
+
+    def _save(self):
+        with open(self.path, "w") as f:
+            json.dump(self.data, f, indent=2)
+
+    def clear(self):
+        if os.path.exists(self.path):
+            os.remove(self.path)
+        self.data = {
+            "sherlock": {}, "maigret": {},
+            "done_sherlock": [], "done_maigret": [],
+        }

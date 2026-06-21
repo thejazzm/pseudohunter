@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-import sys, subprocess, re, time, threading, json, os
+import sys, subprocess, re, time, threading, json, os, shutil
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from osint_methodology import (
-    rank_pseudos, SessionJournal, format_dorks_for_txt, dedupe_hits
+    rank_pseudos, SessionJournal, format_dorks_for_txt, dedupe_hits,
+    save_profile, list_profiles, ResumeState
 )
-import shutil
-import threading as _threading_module 
 
 _active_processes = []
 _active_processes_lock = threading.Lock()
@@ -53,6 +52,7 @@ BANNER=f"""{PU}{BD}
 SEP = f"  {GY}{'─'*62}{R}"
 
 def sv(t): return re.sub(r'[aeiouAEIOU]','',t)
+
 def ask(q, opts):
     print(f"\n  {BD}{YE}{q}{R}")
     for k,v in opts.items(): print(f"  {TE}[{k}]{R} {v}")
@@ -121,8 +121,9 @@ def gen_dorks(first, last, email=None, phone=None):
     if phone: dorks.append(f'"{phone}"')
     return dorks
 
-SHERLOCK_TIME_PER_PSEUDO = 25   
-MAIGRET_TIME_PER_PSEUDO  = 140  
+# ─── Estimation & profils de concurrence ──────────────────────────────────────
+SHERLOCK_TIME_PER_PSEUDO = 25
+MAIGRET_TIME_PER_PSEUDO  = 140
 
 def get_concurrency_profile(nb):
     if nb <= 5:
@@ -135,7 +136,9 @@ def get_concurrency_profile(nb):
         return {"workers": 2, "sherlock_timeout": 360, "maigret_timeout": 540}
 
 def estimate_seconds(nb, use_s, use_m, workers):
-    batches = -(-nb // workers)  # division entière arrondie au-dessus
+    if nb <= 0:
+        return 0
+    batches = -(-nb // workers)
     total = 0
     if use_s: total = max(total, batches * SHERLOCK_TIME_PER_PSEUDO)
     if use_m: total = max(total, batches * MAIGRET_TIME_PER_PSEUDO)
@@ -220,7 +223,7 @@ def run_maigret(p,t,timeout=420,journal=None):
         t.update("Maigret",p,False);return p,[]
     finally:
         if proc: _unregister_process(proc)
-    
+
 def run_holehe(email,t):
     try:
         r=subprocess.run(["holehe",email,"--only-used"],capture_output=True,text=True,timeout=120)
@@ -241,9 +244,7 @@ def run_phoneinfoga(phone,t):
 def export_results(data, first, last):
     ts=datetime.now().strftime("%Y%m%d_%H%M%S")
     name=f"pseudohunter_{first}_{last}_{ts}"
-    # JSON
     with open(f"{name}.json","w") as f: json.dump(data,f,indent=2)
-    # TXT
     with open(f"{name}.txt","w") as f:
         f.write(f"PseudoHunter — {first} {last} — {datetime.now()}\n")
         f.write("="*60+"\n\n")
@@ -257,13 +258,7 @@ def export_results(data, first, last):
                     for x in v: f.write(f"    + {x}\n")
     return name
 
-import shutil
-
 def check_dependencies(need_sherlock=False, need_maigret=False, need_holehe=False, need_phoneinfoga=False):
-    """
-    Vérifie que les outils externes nécessaires sont installés AVANT de lancer le scan.
-    Retourne (ok: bool, missing: list[str])
-    """
     checks = {
         "sherlock": need_sherlock,
         "maigret": need_maigret,
@@ -273,28 +268,56 @@ def check_dependencies(need_sherlock=False, need_maigret=False, need_holehe=Fals
     missing = [tool for tool, needed in checks.items() if needed and shutil.which(tool) is None]
     return (len(missing) == 0, missing)
 
+def score_color(score):
+    if score >= 70: return GR
+    if score >= 45: return YE
+    return GY
+
 def main():
     print(BANNER)
 
-    # ── Target info
-    first = inp("First name")
-    last  = inp("Last name")
+    # ── Load existing profile or enter new target
+    existing_profiles = list_profiles()
+    first = last = None
+    email = phone = ""
+
+    if existing_profiles:
+        print(f"\n  {BD}{YE}Saved profiles found:{R}")
+        for idx, prof in enumerate(existing_profiles, 1):
+            print(f"  {TE}[{idx}]{R} {prof['first']} {prof['last']}  {GY}(last used: {prof.get('last_used','?')}){R}")
+        print(f"  {TE}[n]{R} New target")
+        print(f"  {GY}> {R}", end="")
+        choice = input().strip().lower()
+        if choice.isdigit() and 1 <= int(choice) <= len(existing_profiles):
+            prof = existing_profiles[int(choice)-1]
+            first, last = prof["first"], prof["last"]
+            email, phone = prof.get("email","") or "", prof.get("phone","") or ""
+            print(f"\n  {GR}Loaded profile: {first} {last}{R}")
+
     if not first or not last:
-        print(f"\n  {YE}First and last name required.{R}\n"); sys.exit(1)
+        first = inp("First name")
+        last  = inp("Last name")
+        if not first or not last:
+            print(f"\n  {YE}First and last name required.{R}\n"); sys.exit(1)
+        email = inp("Email address", optional=True)
+        phone = inp("Phone number (e.g. +33612345678)", optional=True)
 
-    email = inp("Email address", optional=True)
-    phone = inp("Phone number (e.g. +33612345678)", optional=True)
-
-    # ── Pseudo count
+    # ── Pseudo generation + confidence ranking
     all_pseudos = gen_pseudos(first, last)
     ranked = rank_pseudos(all_pseudos, first, last)
     all_pseudos = [p for p, score in ranked]
+    pseudo_scores = {p: score for p, score in ranked}
+
     print(f"\n  {GY}{len(all_pseudos)} variants available (>=5 chars){R}\n")
 
     items_all = list(enumerate(all_pseudos, 1))
     for i in range(0, len(items_all), 3):
-        row = items_all[i:i+3]; line = ""
-        for idx, p in row: line += f"  {GY}{idx:02d}.{R} {p:<24}"
+        row = items_all[i:i+3]
+        line = ""
+        for idx, p in row:
+            sc = pseudo_scores.get(p, 0)
+            c = score_color(sc)
+            line += f"  {GY}{idx:02d}.{R} {p:<22}{c}{sc:3d}%{R}  "
         print(line)
 
     print(f"\n  {BD}{YE}Selection mode:{R}")
@@ -303,6 +326,7 @@ def main():
     print(f"  {GY}> {R}", end="")
     sel_mode = input().strip().lower()
 
+    pseudos = []
     if sel_mode == "m":
         print(f"  {BD}{TE}Enter numbers separated by commas{R} {DM}(e.g. 2,7,15){R}: ", end="")
         raw = input().strip()
@@ -323,6 +347,7 @@ def main():
 
     print(f"\n  {GR}{len(pseudos)} pseudo(s) selected.{R}")
 
+    # ── Estimation before mode choice
     profile = get_concurrency_profile(len(pseudos))
     est_sherlock = estimate_seconds(len(pseudos), True, False, profile["workers"])
     est_maigret  = estimate_seconds(len(pseudos), False, True, profile["workers"])
@@ -348,30 +373,42 @@ def main():
     use_h = mode == "4" and bool(email)
     use_p = mode == "4" and bool(phone)
 
+    # ── Vérification des dépendances avant tout lancement
     deps_ok, missing = check_dependencies(use_s, use_m, use_h, use_p)
     if not deps_ok:
         print(f"\n  {RD}{BD}Missing required tool(s):{R} {', '.join(missing)}")
         print(f"  {YE}Install them before running this mode, or choose a different mode.{R}\n")
         sys.exit(1)
 
-    # ── Profil de concurrence + estimation de durée
-    profile = get_concurrency_profile(len(pseudos))
-    est_seconds = estimate_seconds(len(pseudos), use_s, use_m, profile["workers"])
+    # ── Resume check
+    resume = ResumeState(first, last)
+    if resume.has_pending():
+        print(f"\n  {YE}A previous interrupted scan was found for {first} {last}.{R}")
+        rchoice = ask("Resume previous scan?", {"y":"Yes, continue where it left off","n":"No, start fresh (discard previous progress)"})
+        if rchoice != "y":
+            resume.clear()
 
-    print(f"\n  {BD}{YE}Estimated time:{R} ~{fmt_duration(est_seconds)} "
-          f"{DM}({len(pseudos)} pseudos, {profile['workers']} workers parallel){R}")
+    todo_s = resume.remaining("sherlock", pseudos) if use_s else []
+    todo_m = resume.remaining("maigret", pseudos) if use_m else []
 
+    skipped_s = len(pseudos) - len(todo_s) if use_s else 0
+    skipped_m = len(pseudos) - len(todo_m) if use_m else 0
+    if skipped_s or skipped_m:
+        print(f"\n  {GR}Resuming:{R} skipping {skipped_s} already-done Sherlock and {skipped_m} already-done Maigret lookups.")
+
+    remaining_count = max(
+        len(todo_s) if use_s else 0,
+        len(todo_m) if use_m else 0,
+        len(pseudos) if not (use_s or use_m) else 0
+    )
+    est_seconds = estimate_seconds(remaining_count, use_s, use_m, profile["workers"])
     if est_seconds > 600:
         conf = ask("This scan will take a while. Continue?", {"y":"Yes, launch it","n":"No, go back and reduce pseudo count"})
         if conf == "n":
             print(f"\n  {YE}Cancelled. Re-run the script with fewer variants.{R}\n")
             sys.exit(0)
 
-    # ── Display variants
-    print(f"\n  {BD}{PU}Target{R}   : {BD}{first} {last}{R}")
-    ...
-
-    # ── Display variants
+    # ── Display variants summary
     print(f"\n  {BD}{PU}Target{R}   : {BD}{first} {last}{R}")
     if email: print(f"  {BD}{PU}Email{R}    : {email}")
     if phone: print(f"  {BD}{PU}Phone{R}    : {phone}")
@@ -395,29 +432,44 @@ def main():
     # ── Launch search
     print(f"\n  {BD}{YE}Launching search...{R}\n")
     tasks={}
-    if use_s: tasks["Sherlock"]=len(pseudos)
-    if use_m: tasks["Maigret"]=len(pseudos)
+    if use_s: tasks["Sherlock"]=len(todo_s)
+    if use_m: tasks["Maigret"]=len(todo_m)
     if use_h: tasks["Holehe"]=1
     if use_p: tasks["Phone"]=1
 
     tracker=Tracker(tasks); tracker.start()
+
     journal = SessionJournal(first, last)
     journal.log("search_start", {"mode": mode, "nb_pseudos": len(pseudos)})
 
-    fs={};fm={};fh=None;fp=None
-    ex_sherlock = ThreadPoolExecutor(max_workers=profile["workers"]) if use_s else None
-    ex_maigret  = ThreadPoolExecutor(max_workers=max(1, profile["workers"]-1)) if use_m else None
+    futures_map = {}
+    fh=None;fp=None
+    ex_sherlock = ThreadPoolExecutor(max_workers=profile["workers"]) if use_s and todo_s else None
+    ex_maigret  = ThreadPoolExecutor(max_workers=max(1, profile["workers"]-1)) if use_m and todo_m else None
     ex_misc     = ThreadPoolExecutor(max_workers=2) if (use_h or use_p) else None
 
     try:
-        if use_s: fs={ex_sherlock.submit(run_sherlock,p,tracker,profile["sherlock_timeout"],journal):p for p in pseudos}
-        if use_m: fm={ex_maigret.submit(run_maigret,p,tracker,profile["maigret_timeout"],journal):p for p in pseudos}
+        if ex_sherlock:
+            for p in todo_s:
+                fut = ex_sherlock.submit(run_sherlock,p,tracker,profile["sherlock_timeout"],journal)
+                futures_map[fut] = ("sherlock", p)
+        if ex_maigret:
+            for p in todo_m:
+                fut = ex_maigret.submit(run_maigret,p,tracker,profile["maigret_timeout"],journal)
+                futures_map[fut] = ("maigret", p)
         if use_h: fh=ex_misc.submit(run_holehe,email,tracker)
         if use_p: fp=ex_misc.submit(run_phoneinfoga,phone,tracker)
 
-        for f in as_completed({**fs,**fm}): pass
+        for fut in as_completed(futures_map):
+            tool, p = futures_map[fut]
+            _, hits = fut.result()
+            resume.mark_done(tool, p, hits)
         if fh: fh.result()
         if fp: fp.result()
+    except KeyboardInterrupt:
+        tracker.stop()
+        print(f"\n  {YE}Stopping running scans (progress saved — you can resume later)...{R}")
+        raise
     finally:
         if ex_sherlock: ex_sherlock.shutdown(wait=True)
         if ex_maigret:  ex_maigret.shutdown(wait=True)
@@ -428,17 +480,9 @@ def main():
     # ── Collect results
     res={"target":{"first":first,"last":last,"email":email,"phone":phone},
          "dorks":gen_dorks(first,last,email,phone),
-         "sherlock":{},"maigret":{},"holehe":[],"phoneinfoga":[]}
-
-    if use_s:
-        for f,p in fs.items():
-            _,l=f.result()
-            if l: res["sherlock"][p]=l
-
-    if use_m:
-        for f,p in fm.items():
-            _,l=f.result()
-            if l: res["maigret"][p]=l
+         "sherlock": resume.get_results("sherlock") if use_s else {},
+         "maigret": resume.get_results("maigret") if use_m else {},
+         "holehe":[], "phoneinfoga":[]}
 
     if use_h and fh:
         _,l=fh.result()
@@ -448,12 +492,20 @@ def main():
         _,l=fp.result()
         res["phoneinfoga"]=l
 
+    # ── Scan fully completed -> clear resume state
+    resume.clear()
+
+    # ── Cross-tool deduplication
+    merged = dedupe_hits(res.get("sherlock", {}), res.get("maigret", {}))
+    res["merged"] = merged
+
     # ── Display results
     if use_s:
         section("Sherlock Results", GR)
         if res["sherlock"]:
             for p,ls in res["sherlock"].items():
-                print(f"  {BD}{TE}{p}{R}")
+                sc = pseudo_scores.get(p, 0); c = score_color(sc)
+                print(f"  {BD}{TE}{p}{R}  {c}({sc}% confidence){R}")
                 for l in ls: print(f"    {GR}[+]{R} {l.split(': ')[-1] if ': ' in l else l}")
                 print()
         else: print(f"  {GY}No results from Sherlock.{R}\n")
@@ -462,10 +514,22 @@ def main():
         section("Maigret Results", PU)
         if res["maigret"]:
             for p,ls in res["maigret"].items():
-                print(f"  {BD}{PU}{p}{R}")
+                sc = pseudo_scores.get(p, 0); c = score_color(sc)
+                print(f"  {BD}{PU}{p}{R}  {c}({sc}% confidence){R}")
                 for l in ls: print(f"    {CY}[+]{R} {l}")
                 print()
         else: print(f"  {GY}No results from Maigret.{R}\n")
+
+    if use_s and use_m and res.get("merged"):
+        any_merged = any(data["merged_unique"] for data in res["merged"].values())
+        if any_merged:
+            section("Cross-tool Deduplicated Hits", YE)
+            for p, data in res["merged"].items():
+                if data["merged_unique"]:
+                    sc = pseudo_scores.get(p, 0); c = score_color(sc)
+                    print(f"  {BD}{YE}{p}{R}  {c}({sc}% confidence){R}")
+                    for l in data["merged_unique"]: print(f"    {GR}[+]{R} {l}")
+                    print()
 
     if use_h:
         section("Holehe Results — Email accounts", BL)
@@ -485,8 +549,16 @@ def main():
     if exp == "y":
         fname = export_results(res, first, last)
         print(f"\n  {GR}Saved:{R} {fname}.json / {fname}.txt\n")
-        journal_path = journal.save(f"pseudohunter_journal_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+
+    journal_path = journal.save(f"pseudohunter_journal_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
     print(f"  {GR}Journal saved:{R} {journal_path}\n")
+
+    # ── Save profile
+    print(SEP)
+    save_choice = ask("Save this target as a profile for later?", {"y":"Yes","n":"No"})
+    if save_choice == "y":
+        ppath = save_profile(first, last, email, phone)
+        print(f"\n  {GR}Profile saved:{R} {ppath}\n")
 
     # ── Summary
     total = len(res["sherlock"])+len(res["maigret"])+(1 if res["holehe"] else 0)+(1 if res["phoneinfoga"] else 0)

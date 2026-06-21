@@ -16,3 +16,7 @@ venv/
 
 # OS
 .DS_Store
+
+# PseudoHunter profiles & resume state — contains PII, never push
+profiles/
+resume/
