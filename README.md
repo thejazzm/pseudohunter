@@ -149,6 +149,18 @@ You are responsible for complying with applicable laws (including data protectio
 - [ ] Confidence score displayed inline in results
 - [ ] Cross-tool result deduplication wired into the main report (currently available in `osint_methodology.py`, not yet surfaced in CLI output)
 
+### 5. (Optional) Install as a global command
+
+```bash
+./install.sh
+```
+
+This lets you run the tool from anywhere with:
+
+```bash
+pseudohunter
+```
+
 ---
 
 ## License
