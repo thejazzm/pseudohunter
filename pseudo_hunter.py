@@ -46,7 +46,7 @@ BANNER=f"""{PU}{BD}
 {TE}        ██╔══██║██║   ██║██║╚██╗██║   ██║   ██╔══╝  ██╔══██╗{R}
 {TE}        ██║  ██║╚██████╔╝██║ ╚████║   ██║   ███████╗██║  ██║{R}
 {TE}        ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝   ╚═╝   ╚══════╝╚═╝  ╚═╝{R}
-{GY}              OSINT username hunter — by thejazzman ft. Claude{R}
+{GY}                       OSINT username hunter — by thejazzman{R}
 """
 
 SEP = f"  {GY}{'─'*62}{R}"
