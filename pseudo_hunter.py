@@ -7,6 +7,8 @@ from osint_methodology import (
     save_profile, list_profiles, ResumeState
 )
 
+OUTPUT_DIR = "output"
+
 _active_processes = []
 _active_processes_lock = threading.Lock()
 
@@ -242,8 +244,9 @@ def run_phoneinfoga(phone,t):
 
 # ─── Export ──────────────────────────────────────────────────────────────────
 def export_results(data, first, last):
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
     ts=datetime.now().strftime("%Y%m%d_%H%M%S")
-    name=f"pseudohunter_{first}_{last}_{ts}"
+    name=os.path.join(OUTPUT_DIR, f"pseudohunter_{first}_{last}_{ts}")
     with open(f"{name}.json","w") as f: json.dump(data,f,indent=2)
     with open(f"{name}.txt","w") as f:
         f.write(f"PseudoHunter — {first} {last} — {datetime.now()}\n")
@@ -550,7 +553,8 @@ def main():
         fname = export_results(res, first, last)
         print(f"\n  {GR}Saved:{R} {fname}.json / {fname}.txt\n")
 
-    journal_path = journal.save(f"pseudohunter_journal_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    journal_path = journal.save(os.path.join(OUTPUT_DIR, f"pseudohunter_journal_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"))
     print(f"  {GR}Journal saved:{R} {journal_path}\n")
 
     # ── Save profile

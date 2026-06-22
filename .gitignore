@@ -1,7 +1,7 @@
-# PseudoHunter scan data — NEVER PUSH
-pseudohunter_*.json
-pseudohunter_*.txt
-pseudohunter_journal_*.json
+# PseudoHunter generated output — NEVER PUSH (contains PII)
+output/
+profiles/
+resume/
 
 # Python
 __pycache__/
@@ -16,7 +16,3 @@ venv/
 
 # OS
 .DS_Store
-
-# PseudoHunter profiles & resume state — contains PII, never push
-profiles/
-resume/
