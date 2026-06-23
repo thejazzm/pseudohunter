@@ -30,26 +30,15 @@ git clone https://github.com/thejazzm/pseudohunter.git
 cd pseudohunter
 ```
 
-### 2. Install Python dependencies
-
+# Set up
 ```bash
-pip install -r requirements.txt
+chmod +x install.sh && ./install.sh
 ```
 
-### 3. Install PhoneInfoga (Go binary, not on PyPI)
-
-Download the latest release for your architecture from the [PhoneInfoga releases page](https://github.com/sundowndev/phoneinfoga/releases), then:
+Run:
 
 ```bash
-tar -xzf phoneinfoga_Linux_x86_64.tar.gz
-chmod +x phoneinfoga
-sudo mv phoneinfoga /usr/local/bin/
-```
-
-Verify installation:
-
-```bash
-phoneinfoga version
+pseudohunter-lite
 ```
 
 ### 4. Verify all tools are available
