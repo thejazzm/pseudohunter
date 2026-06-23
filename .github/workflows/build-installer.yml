@@ -1,0 +1,28 @@
+name: Build Windows Installer
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download PhoneInfoga binary
+        run: |
+          curl -L -o installer/phoneinfoga.zip https://github.com/sundowndev/phoneinfoga/releases/download/v2.11.0/phoneinfoga_Windows_x86_64.zip
+          Expand-Archive installer/phoneinfoga.zip -DestinationPath installer/
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y
+
+      - name: Compile installer
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\setup.iss
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PseudoHunterSetup
+          path: installer\output\PseudoHunterSetup.exe

@@ -251,8 +251,9 @@ def run_holehe(email,t):
     except subprocess.TimeoutExpired: t.update("Holehe",email,False);return email,[]
 
 def run_phoneinfoga(phone,t):
+    phoneinfoga_cmd = shutil.which("phoneinfoga") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "phoneinfoga.exe")
     try:
-        r=subprocess.run(["phoneinfoga","scan","-n",phone],capture_output=True,text=True,timeout=120)
+        r=subprocess.run([phoneinfoga_cmd,"scan","-n",phone],capture_output=True,text=True,timeout=120)
         l=[x.strip() for x in r.stdout.splitlines() if x.strip() and "Error" not in x and "---" not in x]
         t.update("Phone",phone,bool(l));return phone,l
     except FileNotFoundError: t.update("Phone",phone,False);return phone,[]
@@ -278,13 +279,14 @@ def export_results(data, first, last):
     return name
 
 def check_dependencies(need_sherlock=False, need_maigret=False, need_holehe=False, need_phoneinfoga=False):
+    phoneinfoga_local = os.path.join(os.path.dirname(os.path.abspath(__file__)), "phoneinfoga.exe")
     checks = {
-        "sherlock": need_sherlock,
-        "maigret": need_maigret,
-        "holehe": need_holehe,
-        "phoneinfoga": need_phoneinfoga,
+        "sherlock": (need_sherlock, shutil.which("sherlock") is None),
+        "maigret": (need_maigret, shutil.which("maigret") is None),
+        "holehe": (need_holehe, shutil.which("holehe") is None),
+        "phoneinfoga": (need_phoneinfoga, shutil.which("phoneinfoga") is None and not os.path.exists(phoneinfoga_local)),
     }
-    missing = [tool for tool, needed in checks.items() if needed and shutil.which(tool) is None]
+    missing = [tool for tool, (needed, absent) in checks.items() if needed and absent]
     return (len(missing) == 0, missing)
 
 def score_color(score):
