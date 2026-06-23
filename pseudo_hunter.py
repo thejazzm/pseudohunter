@@ -4,7 +4,7 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from osint_methodology import (
     rank_pseudos, SessionJournal, format_dorks_for_txt, dedupe_hits,
-    save_profile, list_profiles, ResumeState
+    save_profile, list_profiles, ResumeState, export_html_tree
 )
 
 OUTPUT_DIR = "output"
@@ -552,6 +552,8 @@ def main():
     if exp == "y":
         fname = export_results(res, first, last)
         print(f"\n  {GR}Saved:{R} {fname}.json / {fname}.txt\n")
+        tree_path = export_html_tree(res, pseudo_scores, first, last)
+        print(f"  {GR}HTML tree report:{R} {tree_path}\n")
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     journal_path = journal.save(os.path.join(OUTPUT_DIR, f"pseudohunter_journal_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"))

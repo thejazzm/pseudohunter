@@ -203,3 +203,96 @@ class ResumeState:
             "sherlock": {}, "maigret": {},
             "done_sherlock": [], "done_maigret": [],
         }
+PLATFORM_IMPORTANCE = {
+    "linkedin": 100, "github": 95, "twitter": 85, "x.com": 85,
+    "instagram": 80, "facebook": 75, "reddit": 70, "tiktok": 65,
+    "pinterest": 50, "youtube": 60, "telegram": 55, "discord": 50,
+}
+
+def guess_platform_importance(url_or_line):
+    """Devine l'importance d'un site à partir de son URL/nom (0-100, 30 par défaut)."""
+    text = url_or_line.lower()
+    for site, weight in PLATFORM_IMPORTANCE.items():
+        if site in text:
+            return weight
+    return 30
+    
+    
+def build_tree_report_data(res, pseudo_scores):
+    """
+    Construit une structure hiérarchique triée pour le rapport HTML :
+    pseudo (trié par score) -> outil -> hits (triés par importance plateforme)
+    """
+    tree = []
+    all_pseudos = set(res.get("sherlock", {}).keys()) | set(res.get("maigret", {}).keys())
+
+    for pseudo in sorted(all_pseudos, key=lambda p: pseudo_scores.get(p, 0), reverse=True):
+        entry = {"pseudo": pseudo, "score": pseudo_scores.get(pseudo, 0), "hits": []}
+        for tool_key, tool_label in [("sherlock", "Sherlock"), ("maigret", "Maigret")]:
+            for line in res.get(tool_key, {}).get(pseudo, []):
+                entry["hits"].append({
+                    "tool": tool_label,
+                    "line": line,
+                    "importance": guess_platform_importance(line),
+                })
+        entry["hits"].sort(key=lambda h: h["importance"], reverse=True)
+        if entry["hits"]:
+            tree.append(entry)
+
+    return tree
+
+def export_html_tree(res, pseudo_scores, first, last):
+    """Génère un rapport HTML en arborescence, trié par pertinence."""
+    tree = build_tree_report_data(res, pseudo_scores)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = "output"
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, f"pseudohunter_report_{first}_{last}_{ts}.html")
+
+    def score_badge(score):
+        color = "#3fb950" if score >= 70 else "#d29922" if score >= 45 else "#8b949e"
+        return f'<span style="background:{color}22;color:{color};padding:2px 8px;border-radius:10px;font-size:12px;">{score}%</span>'
+
+    def importance_bar(imp):
+        color = "#f85149" if imp >= 80 else "#d29922" if imp >= 50 else "#3fb950"
+        return f'<div style="background:#21262d;border-radius:4px;height:6px;width:80px;display:inline-block;"><div style="background:{color};height:100%;width:{imp}%;border-radius:4px;"></div></div>'
+
+    nodes_html = ""
+    for entry in tree:
+        hits_html = ""
+        for h in entry["hits"]:
+            url_match = re.search(r'https?://\S+', h["line"])
+            url = url_match.group(0) if url_match else h["line"]
+            hits_html += f"""
+            <li style="margin:6px 0;">
+                <span style="color:#8b949e;font-size:11px;">[{h['tool']}]</span>
+                <a href="{url}" target="_blank" style="color:#58a6ff;">{url}</a>
+                {importance_bar(h['importance'])}
+            </li>"""
+
+        nodes_html += f"""
+        <details style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px 16px;margin-bottom:10px;" open>
+            <summary style="cursor:pointer;font-weight:600;color:#c9d1d9;">
+                {entry['pseudo']} {score_badge(entry['score'])}
+                <span style="color:#8b949e;font-size:12px;">({len(entry['hits'])} hit(s))</span>
+            </summary>
+            <ul style="list-style:none;padding-left:8px;margin-top:10px;">{hits_html}</ul>
+        </details>"""
+
+    html_doc = f"""<!DOCTYPE html>
+<html lang="fr"><head><meta charset="UTF-8">
+<title>PseudoHunter Report — {first} {last}</title>
+<style>
+body {{ background:#0d1117; color:#c9d1d9; font-family:-apple-system,sans-serif; padding:40px 20px; }}
+.container {{ max-width:800px; margin:0 auto; }}
+h1 {{ font-size:24px; }} .subtitle {{ color:#8b949e; margin-bottom:24px; }}
+</style></head><body>
+<div class="container">
+<h1>PseudoHunter — {first} {last}</h1>
+<div class="subtitle">Triés par pertinence du pseudo et importance de la plateforme</div>
+{nodes_html}
+</div></body></html>"""
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(html_doc)
+    return path
