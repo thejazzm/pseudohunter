@@ -38,7 +38,7 @@ chmod +x install.sh && ./install.sh
 Run:
 
 ```bash
-pseudohunter-lite
+pseudohunter
 ```
 
 ### 4. Verify all tools are available
