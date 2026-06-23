@@ -186,10 +186,23 @@ class Tracker:
             print(f"\r  {TE}{s}{R} {line}  {GR}hits:{total_hits}{R}  {GY}{ac[:22]:<22}{R}",end="",flush=True)
             time.sleep(0.08)
 
+SHERLOCK_RAW_DIR = os.path.join("output", "_sherlock_raw")
+
 def run_sherlock(p,t,timeout=300,journal=None):
+    """
+    Runs Sherlock for a single username variant.
+    Sherlock writes a raw txt file per run by default; we redirect it to a
+    dedicated subfolder and delete it right after, since results are already
+    parsed from stdout.
+    """
     proc = None
+    os.makedirs(SHERLOCK_RAW_DIR, exist_ok=True)
+    raw_file = os.path.join(SHERLOCK_RAW_DIR, f"{p}.txt")
     try:
-        proc = subprocess.Popen(["sherlock",p,"--timeout","8","--print-found"],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+        proc = subprocess.Popen(
+            ["sherlock", p, "--timeout", "8", "--print-found", "--folderoutput", SHERLOCK_RAW_DIR],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
         _register_process(proc)
         stdout, stderr = proc.communicate(timeout=timeout)
         l=[x.strip() for x in stdout.splitlines() if "[+]" in x or "http" in x]
@@ -205,6 +218,9 @@ def run_sherlock(p,t,timeout=300,journal=None):
         t.update("Sherlock",p,False);return p,[]
     finally:
         if proc: _unregister_process(proc)
+        if os.path.exists(raw_file):
+            try: os.remove(raw_file)
+            except OSError: pass
 
 def run_maigret(p,t,timeout=420,journal=None):
     proc = None

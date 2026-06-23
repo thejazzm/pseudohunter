@@ -242,56 +242,269 @@ def build_tree_report_data(res, pseudo_scores):
     return tree
 
 def export_html_tree(res, pseudo_scores, first, last):
-    """Génère un rapport HTML en arborescence, trié par pertinence."""
+    """Generates a polished, self-contained HTML report, sorted by pseudo
+    confidence and platform importance, with search/filter and collapse controls."""
     tree = build_tree_report_data(res, pseudo_scores)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir = "output"
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, f"pseudohunter_report_{first}_{last}_{ts}.html")
 
-    def score_badge(score):
-        color = "#3fb950" if score >= 70 else "#d29922" if score >= 45 else "#8b949e"
-        return f'<span style="background:{color}22;color:{color};padding:2px 8px;border-radius:10px;font-size:12px;">{score}%</span>'
+    total_hits = sum(len(e["hits"]) for e in tree)
+    total_pseudos = len(tree)
+    high_conf = sum(1 for e in tree if e["score"] >= 70)
+    high_importance_hits = sum(1 for e in tree for h in e["hits"] if h["importance"] >= 80)
 
-    def importance_bar(imp):
-        color = "#f85149" if imp >= 80 else "#d29922" if imp >= 50 else "#3fb950"
-        return f'<div style="background:#21262d;border-radius:4px;height:6px;width:80px;display:inline-block;"><div style="background:{color};height:100%;width:{imp}%;border-radius:4px;"></div></div>'
+    def score_class(score):
+        if score >= 70: return "high"
+        if score >= 45: return "medium"
+        return "low"
+
+    def importance_class(imp):
+        if imp >= 80: return "high"
+        if imp >= 50: return "medium"
+        return "low"
 
     nodes_html = ""
     for entry in tree:
+        sc = entry["score"]
+        sc_class = score_class(sc)
         hits_html = ""
         for h in entry["hits"]:
             url_match = re.search(r'https?://\S+', h["line"])
             url = url_match.group(0) if url_match else h["line"]
+            domain_match = re.search(r'https?://(?:www\.)?([^/]+)', url)
+            domain = domain_match.group(1) if domain_match else h["tool"]
+            imp_class = importance_class(h["importance"])
             hits_html += f"""
-            <li style="margin:6px 0;">
-                <span style="color:#8b949e;font-size:11px;">[{h['tool']}]</span>
-                <a href="{url}" target="_blank" style="color:#58a6ff;">{url}</a>
-                {importance_bar(h['importance'])}
+            <li class="hit" data-domain="{domain.lower()}">
+                <span class="tool-tag">{h['tool']}</span>
+                <a href="{url}" target="_blank" rel="noopener">{domain}</a>
+                <div class="importance-bar"><div class="importance-fill {imp_class}" style="width:{h['importance']}%"></div></div>
             </li>"""
 
         nodes_html += f"""
-        <details style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px 16px;margin-bottom:10px;" open>
-            <summary style="cursor:pointer;font-weight:600;color:#c9d1d9;">
-                {entry['pseudo']} {score_badge(entry['score'])}
-                <span style="color:#8b949e;font-size:12px;">({len(entry['hits'])} hit(s))</span>
+        <details class="pseudo-card" open data-pseudo="{entry['pseudo'].lower()}">
+            <summary>
+                <span class="chevron">&#9656;</span>
+                <span class="pseudo-name">{entry['pseudo']}</span>
+                <span class="score-badge {sc_class}">{sc}% confidence</span>
+                <span class="hit-count">{len(entry['hits'])} hit(s)</span>
             </summary>
-            <ul style="list-style:none;padding-left:8px;margin-top:10px;">{hits_html}</ul>
+            <ul class="hits-list">{hits_html}</ul>
         </details>"""
 
     html_doc = f"""<!DOCTYPE html>
-<html lang="fr"><head><meta charset="UTF-8">
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PseudoHunter Report — {first} {last}</title>
 <style>
-body {{ background:#0d1117; color:#c9d1d9; font-family:-apple-system,sans-serif; padding:40px 20px; }}
-.container {{ max-width:800px; margin:0 auto; }}
-h1 {{ font-size:24px; }} .subtitle {{ color:#8b949e; margin-bottom:24px; }}
-</style></head><body>
+:root {{
+    --bg: #0a0612; --card: #14101f; --border: #2a2240;
+    --text: #d6d2e6; --muted: #8e86a8; --accent: #a78bfa;
+    --accent2: #c4b5fd; --green: #4ade80; --yellow: #d29922; --red: #f87171;
+}}
+* {{ box-sizing: border-box; margin: 0; padding: 0; }}
+html, body {{ background: var(--bg); }}
+body {{
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    padding: 48px 20px 80px;
+    min-height: 100vh;
+    position: relative;
+    overflow-x: hidden;
+}}
+.glow-layer {{
+    position: fixed;
+    top: 0; left: 0; width: 100%; height: 100%;
+    pointer-events: none;
+    z-index: 0;
+    background: radial-gradient(600px circle at var(--mx, 50%) var(--my, 30%),
+        rgba(167, 139, 250, 0.10), transparent 70%);
+    transition: background 0.05s linear;
+}}
+.container {{ position: relative; z-index: 1; }}
+.container {{ max-width: 880px; margin: 0 auto; }}
+
+header {{ margin-bottom: 36px; }}
+header .badge {{
+    display: inline-block; font-size: 11px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--accent);
+    background: rgba(88,166,255,0.1); padding: 4px 10px;
+    border-radius: 20px; margin-bottom: 12px; font-weight: 600;
+}}
+h1 {{ font-size: 30px; font-weight: 700; letter-spacing: -0.02em; }}
+.subtitle {{ color: var(--muted); margin-top: 6px; font-size: 14px; }}
+
+.summary {{
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px;
+    margin: 28px 0 36px;
+}}
+.summary-card {{
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 18px 16px;
+    transition: transform 0.15s, border-color 0.15s;
+}}
+.summary-card:hover {{ transform: translateY(-2px); border-color: var(--accent); }}
+.summary-card .value {{ font-size: 26px; font-weight: 700; color: var(--accent); }}
+.summary-card .label {{ color: var(--muted); font-size: 12px; margin-top: 4px; }}
+
+.toolbar {{
+    display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap;
+}}
+.search-box {{
+    flex: 1; min-width: 200px; background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 14px; color: var(--text); font-size: 14px;
+    outline: none; transition: border-color 0.15s;
+}}
+.search-box:focus {{ border-color: var(--accent); }}
+.search-box::placeholder {{ color: var(--muted); }}
+.btn {{
+    background: var(--card); border: 1px solid var(--border); color: var(--text);
+    border-radius: 8px; padding: 10px 16px; font-size: 13px; cursor: pointer;
+    transition: border-color 0.15s, background 0.15s; font-weight: 500;
+}}
+.btn:hover {{ border-color: var(--accent); background: #1c2128; }}
+
+.pseudo-card {{
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; margin-bottom: 12px; overflow: hidden;
+    transition: border-color 0.15s;
+}}
+.pseudo-card[open] {{ border-color: #3d444d; }}
+.pseudo-card summary {{
+    list-style: none; cursor: pointer; padding: 16px 20px;
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+}}
+.pseudo-card summary::-webkit-details-marker {{ display: none; }}
+.chevron {{
+    color: var(--muted); font-size: 12px; transition: transform 0.15s; display: inline-block;
+}}
+.pseudo-card[open] .chevron {{ transform: rotate(90deg); }}
+.pseudo-name {{ font-weight: 600; font-size: 15px; font-family: ui-monospace, monospace; }}
+.score-badge {{
+    font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 20px;
+    margin-left: auto;
+}}
+.score-badge.high {{ background: rgba(63,185,80,0.15); color: var(--green); }}
+.score-badge.medium {{ background: rgba(210,153,34,0.15); color: var(--yellow); }}
+.score-badge.low {{ background: rgba(139,148,158,0.15); color: var(--muted); }}
+.hit-count {{ color: var(--muted); font-size: 12px; }}
+
+.hits-list {{ list-style: none; padding: 0 20px 16px; }}
+.hit {{
+    display: flex; align-items: center; gap: 12px; padding: 9px 0;
+    border-top: 1px solid var(--border); font-size: 13px;
+}}
+.hit:first-child {{ border-top: none; }}
+.tool-tag {{
+    font-size: 10px; font-weight: 700; text-transform: uppercase;
+    color: var(--muted); background: #21262d; padding: 2px 7px;
+    border-radius: 4px; min-width: 56px; text-align: center; flex-shrink: 0;
+}}
+.hit a {{ color: var(--accent); text-decoration: none; word-break: break-all; flex: 1; }}
+.hit a:hover {{ text-decoration: underline; }}
+.importance-bar {{
+    background: #21262d; border-radius: 4px; height: 6px; width: 70px;
+    overflow: hidden; flex-shrink: 0;
+}}
+.importance-fill {{ height: 100%; border-radius: 4px; }}
+.importance-fill.high {{ background: var(--red); }}
+.importance-fill.medium {{ background: var(--yellow); }}
+.importance-fill.low {{ background: var(--green); }}
+
+.empty-state {{ text-align: center; color: var(--muted); padding: 60px 20px; display: none; }}
+
+footer {{
+    color: var(--muted); font-size: 12px; margin-top: 48px;
+    text-align: center; border-top: 1px solid var(--border); padding-top: 24px;
+}}
+
+@media (max-width: 640px) {{
+    .summary {{ grid-template-columns: repeat(2, 1fr); }}
+}}
+</style>
+</head>
+<body>
 <div class="container">
-<h1>PseudoHunter — {first} {last}</h1>
-<div class="subtitle">Triés par pertinence du pseudo et importance de la plateforme</div>
-{nodes_html}
-</div></body></html>"""
+    <header>
+        <div class="badge">OSINT Report</div>
+        <h1>{first} {last}</h1>
+        <div class="subtitle">Generated by PseudoHunter &middot; {datetime.now().strftime('%Y-%m-%d %H:%M')} &middot; Sorted by pseudo confidence &amp; platform importance</div>
+    </header>
+
+    <div class="summary">
+        <div class="summary-card">
+            <div class="value">{total_pseudos}</div>
+            <div class="label">Variants with hits</div>
+        </div>
+        <div class="summary-card">
+            <div class="value">{total_hits}</div>
+            <div class="label">Total hits found</div>
+        </div>
+        <div class="summary-card">
+            <div class="value">{high_conf}</div>
+            <div class="label">High-confidence variants</div>
+        </div>
+        <div class="summary-card">
+            <div class="value">{high_importance_hits}</div>
+            <div class="label">High-importance hits</div>
+        </div>
+    </div>
+
+    <div class="toolbar">
+        <input type="text" class="search-box" id="searchBox" placeholder="Filter by pseudo or domain...">
+        <button class="btn" id="expandAll">Expand all</button>
+        <button class="btn" id="collapseAll">Collapse all</button>
+    </div>
+
+    <div id="treeContainer">
+        {nodes_html if nodes_html else ''}
+    </div>
+    <div class="empty-state" id="emptyState">No results match your filter.</div>
+
+    <footer>
+        PseudoHunter &middot; Public OSINT data only &middot; {total_hits} hit(s) across {total_pseudos} variant(s)
+    </footer>
+</div>
+
+<script>
+const searchBox = document.getElementById('searchBox');
+const cards = Array.from(document.querySelectorAll('.pseudo-card'));
+const emptyState = document.getElementById('emptyState');
+
+searchBox.addEventListener('input', () => {{
+    const q = searchBox.value.toLowerCase().trim();
+    let visibleCount = 0;
+    cards.forEach(card => {{
+        const pseudo = card.dataset.pseudo;
+        const hits = Array.from(card.querySelectorAll('.hit'));
+        let cardMatches = pseudo.includes(q);
+        let anyHitMatches = false;
+        hits.forEach(hit => {{
+            const domain = hit.dataset.domain;
+            const match = q === '' || domain.includes(q) || pseudo.includes(q);
+            hit.style.display = match ? 'flex' : 'none';
+            if (match) anyHitMatches = true;
+        }});
+        const show = q === '' || cardMatches || anyHitMatches;
+        card.style.display = show ? '' : 'none';
+        if (show) visibleCount++;
+    }});
+    emptyState.style.display = visibleCount === 0 ? 'block' : 'none';
+}});
+
+document.getElementById('expandAll').addEventListener('click', () => {{
+    cards.forEach(c => c.open = true);
+}});
+document.getElementById('collapseAll').addEventListener('click', () => {{
+    cards.forEach(c => c.open = false);
+}});
+</script>
+</body>
+</html>"""
 
     with open(path, "w", encoding="utf-8") as f:
         f.write(html_doc)

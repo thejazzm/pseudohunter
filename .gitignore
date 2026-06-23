@@ -16,3 +16,6 @@ venv/
 
 # OS
 .DS_Store
+
+# Sherlock raw output (auto-cleaned after each run, but ignored as safety net)
+output/_sherlock_raw/
