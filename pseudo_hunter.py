@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 import sys, subprocess, re, time, threading, json, os, shutil
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import concurrent.futures
 from osint_methodology import (
     rank_pseudos, SessionJournal, format_dorks_for_txt, dedupe_hits,
-    save_profile, list_profiles, ResumeState, export_html_tree
+    save_profile, list_profiles, ResumeState, export_html_tree,
+    check_leakcheck
 )
 
 OUTPUT_DIR = "output"
@@ -259,6 +260,17 @@ def run_phoneinfoga(phone,t):
     except FileNotFoundError: t.update("Phone",phone,False);return phone,[]
     except subprocess.TimeoutExpired: t.update("Phone",phone,False);return phone,[]
 
+def run_leakcheck(email, t):
+    """Wrapper for check_leakcheck that integrates with the progress Tracker."""
+    try:
+        result = check_leakcheck(email)
+        found = result["found"] > 0
+        t.update("LeakCheck", email, found)
+        return email, result
+    except Exception:
+        t.update("LeakCheck", email, False)
+        return email, {"found": 0, "sources": []}
+
 # ─── Export ──────────────────────────────────────────────────────────────────
 def export_results(data, first, last):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -393,6 +405,7 @@ def main():
     use_m = mode in ("2","3","4")
     use_h = mode == "4" and bool(email)
     use_p = mode == "4" and bool(phone)
+    use_lc = mode == "4" and bool(email)
 
     # ── Vérification des dépendances avant tout lancement
     deps_ok, missing = check_dependencies(use_s, use_m, use_h, use_p)
@@ -457,6 +470,7 @@ def main():
     if use_m: tasks["Maigret"]=len(todo_m)
     if use_h: tasks["Holehe"]=1
     if use_p: tasks["Phone"]=1
+    if use_lc: tasks["LeakCheck"]=1
 
     tracker=Tracker(tasks); tracker.start()
 
@@ -464,10 +478,10 @@ def main():
     journal.log("search_start", {"mode": mode, "nb_pseudos": len(pseudos)})
 
     futures_map = {}
-    fh=None;fp=None
-    ex_sherlock = ThreadPoolExecutor(max_workers=profile["workers"]) if use_s and todo_s else None
-    ex_maigret  = ThreadPoolExecutor(max_workers=max(1, profile["workers"]-1)) if use_m and todo_m else None
-    ex_misc     = ThreadPoolExecutor(max_workers=2) if (use_h or use_p) else None
+    fh=None;fp=None;flc=None
+    ex_sherlock = concurrent.futures.ThreadPoolExecutor(max_workers=profile["workers"]) if use_s and todo_s else None
+    ex_maigret  = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, profile["workers"]-1)) if use_m and todo_m else None
+    ex_misc     = concurrent.futures.ThreadPoolExecutor(max_workers=2) if (use_h or use_p or use_lc) else None
 
     try:
         if ex_sherlock:
@@ -481,7 +495,7 @@ def main():
         if use_h: fh=ex_misc.submit(run_holehe,email,tracker)
         if use_p: fp=ex_misc.submit(run_phoneinfoga,phone,tracker)
 
-        for fut in as_completed(futures_map):
+        for fut in concurrent.futures.as_completed(futures_map):
             tool, p = futures_map[fut]
             _, hits = fut.result()
             resume.mark_done(tool, p, hits)
@@ -512,6 +526,10 @@ def main():
     if use_p and fp:
         _,l=fp.result()
         res["phoneinfoga"]=l
+
+    if use_lc and flc:
+        _, lc_result = flc.result()
+        res["leakcheck"] = lc_result
 
     # ── Scan fully completed -> clear resume state
     resume.clear()
@@ -563,6 +581,16 @@ def main():
         if res["phoneinfoga"]:
             for l in res["phoneinfoga"]: print(f"  {MG}[+]{R} {l}")
         else: print(f"  {GY}No results for this number.{R}\n")
+
+    if use_lc:
+        section("LeakCheck Results — Known breaches", RD)
+        lc = res.get("leakcheck", {"found": 0, "sources": []})
+        if lc["found"] > 0:
+            print(f"  {RD}[!] Found in {lc['found']} breach(es):{R}")
+            for src in lc["sources"]:
+                print(f"    {RD}-{R} {src.get('name', 'Unknown')} ({src.get('date', 'unknown date')})")
+        else:
+            print(f"  {GY}No known breaches for this email.{R}\n")
 
     # ── Export
     print(SEP)

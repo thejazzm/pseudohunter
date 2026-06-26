@@ -43,6 +43,28 @@ def rank_pseudos(pseudos, first, last):
     scored = [(p, score_pseudo(p, first, last)) for p in pseudos]
     return sorted(scored, key=lambda x: x[1], reverse=True)
 
+LEAKCHECK_PUBLIC_URL = "https://leakcheck.io/api/public"
+
+def check_leakcheck(email):
+    """
+    Queries LeakCheck's free public API to check if an email appears in
+    known data breaches. No API key required, rate-limited (~5 req/min).
+
+    Returns a dict: {"found": int, "sources": list[dict]} or
+    {"found": 0, "sources": []} on no match / error.
+    """
+    import requests
+    try:
+        r = requests.get(LEAKCHECK_PUBLIC_URL, params={"check": email}, timeout=10)
+        data = r.json()
+        if data.get("success") and data.get("found", 0) > 0:
+            return {
+                "found": data.get("found", 0),
+                "sources": data.get("sources", []),
+            }
+        return {"found": 0, "sources": []}
+    except (requests.RequestException, ValueError):
+        return {"found": 0, "sources": []}
 
 class SessionJournal:
     def __init__(self, first, last):
