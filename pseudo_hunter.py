@@ -2,6 +2,8 @@
 import sys, subprocess, re, time, threading, json, os, shutil
 from datetime import datetime
 import concurrent.futures
+import webbrowser
+import os
 from osint_methodology import (
     rank_pseudos, SessionJournal, format_dorks_for_txt, dedupe_hits,
     save_profile, list_profiles, ResumeState, export_html_tree,
@@ -559,29 +561,6 @@ def main():
                 print()
         else: print(f"  {GY}No results from Maigret.{R}\n")
 
-    if use_s and use_m and res.get("merged"):
-        any_merged = any(data["merged_unique"] for data in res["merged"].values())
-        if any_merged:
-            section("Cross-tool Deduplicated Hits", YE)
-            for p, data in res["merged"].items():
-                if data["merged_unique"]:
-                    sc = pseudo_scores.get(p, 0); c = score_color(sc)
-                    print(f"  {BD}{YE}{p}{R}  {c}({sc}% confidence){R}")
-                    for l in data["merged_unique"]: print(f"    {GR}[+]{R} {l}")
-                    print()
-
-    if use_h:
-        section("Holehe Results — Email accounts", BL)
-        if res["holehe"]:
-            for l in res["holehe"]: print(f"  {BL}[+]{R} {l}")
-        else: print(f"  {GY}No accounts found for this email.{R}\n")
-
-    if use_p:
-        section("PhoneInfoga Results", MG)
-        if res["phoneinfoga"]:
-            for l in res["phoneinfoga"]: print(f"  {MG}[+]{R} {l}")
-        else: print(f"  {GY}No results for this number.{R}\n")
-
     if use_lc:
         section("LeakCheck Results — Known breaches", RD)
         lc = res.get("leakcheck", {"found": 0, "sources": []})
@@ -594,12 +573,16 @@ def main():
 
     # ── Export
     print(SEP)
-    exp = ask("Export results?", {"y":"Yes — save JSON + TXT report","n":"No"})
+    exp = ask("Export results?", {"y":"Yes — save TXT report + HTML tree","n":"No"})
     if exp == "y":
-        fname = export_results(res, first, last)
-        print(f"\n  {GR}Saved:{R} {fname}.json / {fname}.txt\n")
+        fname = export_results(res, first, last, json_export=False)
+        print(f"\n  {GR}Saved:{R} {fname}.txt\n")
         tree_path = export_html_tree(res, pseudo_scores, first, last)
         print(f"  {GR}HTML tree report:{R} {tree_path}\n")
+
+        open_choice = ask("Open the HTML report now?", {"y":"Yes","n":"No"})
+        if open_choice == "y":
+            open_report(tree_path)
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     journal_path = journal.save(os.path.join(OUTPUT_DIR, f"pseudohunter_journal_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"))
@@ -616,6 +599,15 @@ def main():
     total = len(res["sherlock"])+len(res["maigret"])+(1 if res["holehe"] else 0)+(1 if res["phoneinfoga"] else 0)
     print(SEP)
     print(f"  {BD}Done.{R} {GR}{total} source(s) with results.{R}\n")
+
+def open_report(report_path):
+    """Ouvre le rapport HTML généré dans le navigateur par défaut."""
+    import webbrowser
+    abs_path = os.path.abspath(report_path)
+    try:
+        webbrowser.open(f"file://{abs_path}")
+    except Exception:
+        print(f"  {YE}Impossible d'ouvrir automatiquement. Chemin :{R} {abs_path}")
 
 def safe_main():
     try:
