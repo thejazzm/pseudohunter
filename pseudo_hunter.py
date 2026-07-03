@@ -274,20 +274,24 @@ def run_leakcheck(email, t):
         return email, {"found": 0, "sources": []}
 
 # ─── Export ──────────────────────────────────────────────────────────────────
-def export_results(data, first, last):
+def export_results(data, first, last, json_export=False):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    ts=datetime.now().strftime("%Y%m%d_%H%M%S")
-    name=os.path.join(OUTPUT_DIR, f"pseudohunter_{first}_{last}_{ts}")
-    with open(f"{name}.json","w") as f: json.dump(data,f,indent=2)
-    with open(f"{name}.txt","w") as f:
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    name = os.path.join(OUTPUT_DIR, f"pseudohunter_{first}_{last}_{ts}")
+
+    if json_export:
+        with open(f"{name}.json", "w") as f:
+            json.dump(data, f, indent=2)
+
+    with open(f"{name}.txt", "w") as f:
         f.write(f"PseudoHunter — {first} {last} — {datetime.now()}\n")
         f.write("="*60+"\n\n")
-        for section,results in data.items():
+        for section, results in data.items():
             f.write(f"\n[ {section} ]\n")
-            if isinstance(results,list):
+            if isinstance(results, list):
                 for r in results: f.write(f"  {r}\n")
-            elif isinstance(results,dict):
-                for k,v in results.items():
+            elif isinstance(results, dict):
+                for k, v in results.items():
                     f.write(f"  {k}:\n")
                     for x in v: f.write(f"    + {x}\n")
     return name
